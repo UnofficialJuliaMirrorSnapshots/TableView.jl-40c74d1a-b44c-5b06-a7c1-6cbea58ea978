@@ -19,12 +19,35 @@ end
 to_css_size(s::AbstractString) = s
 to_css_size(s::Real) = "$(s)px"
 
-function showtable(table; dark = false, height = :auto, width = "100%")
-    if !Tables.istable(typeof(table))
-        throw(ArgumentError("Argument is not a table."))
+struct IteratorAndFirst{F, T}
+    first::F
+    source::T
+    len::Int
+    function IteratorAndFirst(x)
+        len = Base.haslength(x) ? length(x) : 0
+        first = iterate(x)
+        return new{typeof(first), typeof(x)}(first, x, len)
     end
+    function IteratorAndFirst(first, x)
+        len = Base.haslength(x) ? length(x) + 1 : 1
+        return new{typeof(first), typeof(x)}(first, x, len)
+    end
+end
+Base.IteratorSize(::Type{IteratorAndFirst{F, T}}) where {F, T} = Base.IteratorSize(T)
+Base.length(x::IteratorAndFirst) = x.len
+Base.IteratorEltype(::Type{IteratorAndFirst{F, T}}) where {F, T} = Base.IteratorEltype(T)
+Base.eltype(x::IteratorAndFirst) = eltype(x.source)
+Base.iterate(x::IteratorAndFirst) = x.first
+function Base.iterate(x::IteratorAndFirst, st)
+    st === nothing && return nothing
+    return iterate(x.source, st)
+end
 
-    tablelength = Base.IteratorSize(table) == Base.HasLength() ? length(Tables.rows(table)) : nothing
+showtable(table::AbstractMatrix; kwargs...) = showtable(Tables.table(table); kwargs...)
+
+function showtable(table; dark = false, height = :auto, width = "100%")
+    rows = Tables.rows(table)
+    tablelength = Base.IteratorSize(rows) == Base.HasLength() ? length(rows) : nothing
 
     if height === :auto
         height = 500
@@ -34,14 +57,21 @@ function showtable(table; dark = false, height = :auto, width = "100%")
         end
     end
 
-    rows = Tables.rows(table)
-    schema = Tables.schema(table)
+    schema = Tables.schema(rows)
     if schema === nothing
+        st = iterate(rows)
+        rows = IteratorAndFirst(st, rows)
+        names = Symbol[]
         types = []
-        for (i, c) in enumerate(Tables.eachcolumn(first(rows)))
-            push!(types, typeof(c))
+        if st !== nothing
+            row = st[1]
+            for nm in propertynames(row)
+                push!(names, nm)
+                push!(types, typeof(getproperty(row, nm)))
+            end
+        else
+            # no schema and no rows
         end
-        names = collect(propertynames(first(rows)))
     else
         names = schema.names
         types = schema.types
@@ -147,6 +177,10 @@ function table2json(rows, names, types; requested = nothing)
                 print(io, ':')
                 if col isa Number
                     JSON.print(io, col)
+                elseif col === nothing
+                    JSON.print(io, "nothing")
+                elseif col === missing
+                    JSON.print(io, "missing")
                 else
                     JSON.print(io, sprint(print, col))
                 end
